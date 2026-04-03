@@ -1,85 +1,94 @@
 /**
- * FCIRS System - Core Logic with MySQL/Node.js Integration
+ * FCIRS System - Core Logic with LocalStorage Integration (No external DB)
  */
-
-// Use localhost API if running directly from file, otherwise use relative path
-const API_BASE_URL = window.location.protocol === 'file:' 
-    ? 'http://localhost:3000/api' 
-    : '/api';
 
 const App = {
     // Current User Session
     currentUser: JSON.parse(localStorage.getItem('currentUser')) || null,
 
+    // Helper functions for localStorage DB
+    DB: {
+        get(key) {
+            return JSON.parse(localStorage.getItem(key)) || [];
+        },
+        set(key, data) {
+            localStorage.setItem(key, JSON.stringify(data));
+        },
+        getSettings() {
+            return JSON.parse(localStorage.getItem('settings')) || {
+                prices: { 'Tuna': 150, 'lumayagan': 150, 'Big Karaw': 150, 'Perit': 150, 'Tulingan': 150, 'MC': 150 }
+            };
+        },
+        setSettings(settings) {
+            localStorage.setItem('settings', JSON.stringify(settings));
+        }
+    },
+
     async init() {
-        console.log("FCIRS Initialized with MySQL Backend");
-        const status = await this.checkConnection();
-        if (!status) {
-            console.warn("Backend server not detected at http://localhost:3000");
+        console.log("FCIRS Initialized with LocalStorage Database");
+        
+        // Initialize default admin if no users exist
+        let users = this.DB.get('users');
+        if (users.length === 0) {
+            users.push({ username: 'Admin', password: '1234', role: 'ADMIN' });
+            this.DB.set('users', users);
         }
     },
 
     async checkConnection() {
-        try {
-            const response = await fetch(`${API_BASE_URL}/settings`, { signal: AbortSignal.timeout(2000) });
-            return response.ok;
-        } catch (e) {
-            return false;
-        }
+        return true; // Always online since data is local
     },
 
     async login(username, password) {
         // Fallback for emergency access
         if (username.toLowerCase() === 'admin' && password === '1234') {
-            const adminUser = { username: 'Admin', password: '1234', role: 'Admin' };
+            const adminUser = { username: 'Admin', password: '1234', role: 'ADMIN' };
             this.currentUser = adminUser;
             localStorage.setItem('currentUser', JSON.stringify(adminUser));
-            this.redirectBasedOnRole('Admin');
+            this.redirectBasedOnRole('ADMIN');
             return true;
         }
 
-        try {
-            const response = await fetch(`${API_BASE_URL}/users/login`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password })
-            });
+        const users = this.DB.get('users');
+        const user = users.find(u => u.username === username && u.password === password);
 
-            if (response.ok) {
-                const data = await response.json();
-                this.currentUser = data.user;
-                localStorage.setItem('currentUser', JSON.stringify(data.user));
-                this.redirectBasedOnRole(data.user.role);
-                return true;
-            }
-        } catch (error) {
-            console.error("Login error:", error);
+        if (user) {
+            this.currentUser = user;
+            localStorage.setItem('currentUser', JSON.stringify(user));
+            this.redirectBasedOnRole(user.role);
+            return true;
         }
         return false;
     },
 
     async register(username, password, role = 'FISHERMAN') {
-        try {
-            const response = await fetch(`${API_BASE_URL}/users/register`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password, role })
-            });
-            if (response.ok) return { success: true };
-            const data = await response.json();
-            return { success: false, message: data.message || 'Registration failed' };
-        } catch (error) {
-            return { success: false, message: 'Server connection failed' };
+        const users = this.DB.get('users');
+        const exists = users.find(u => u.username === username);
+
+        if (exists) {
+            return { success: false, message: 'Username already exists' };
         }
+
+        users.push({ username, password, role: role.toUpperCase() });
+        this.DB.set('users', users);
+        return { success: true };
     },
 
     async deleteUser(username) {
-        try {
-            await fetch(`${API_BASE_URL}/users/${username}`, { method: 'DELETE' });
-            return { success: true };
-        } catch (error) {
-            return { success: false };
-        }
+        let users = this.DB.get('users');
+        users = users.filter(u => u.username !== username);
+        this.DB.set('users', users);
+
+        // Cascade delete
+        let catches = this.DB.get('catches');
+        catches = catches.filter(c => c.fisherman !== username);
+        this.DB.set('catches', catches);
+
+        let expenses = this.DB.get('expenses');
+        expenses = expenses.filter(e => e.recordedBy !== username);
+        this.DB.set('expenses', expenses);
+
+        return { success: true };
     },
 
     logout() {
@@ -89,7 +98,7 @@ const App = {
     },
 
     redirectBasedOnRole(role) {
-        if (role === 'Admin' || role === 'ADMIN') {
+        if (role === 'Admin' || role === 'ADMIN' || role === 'OPERATOR') {
             window.location.href = 'admin.html';
         } else if (role === 'FISHERMAN') {
             window.location.href = 'fisherman.html';
@@ -97,13 +106,7 @@ const App = {
     },
 
     async getSettings() {
-        try {
-            const response = await fetch(`${API_BASE_URL}/settings`);
-            const data = await response.json();
-            return data;
-        } catch (error) {
-            return { prices: { 'Tuna': 150, 'lumayagan': 150, 'Big Karaw': 150, 'Perit': 150, 'Tulingan': 150, 'MC': 150 } };
-        }
+        return this.DB.getSettings();
     },
 
     async updateSettings(newPrices) {
@@ -120,21 +123,14 @@ const App = {
             });
         }
         
-        try {
-            await fetch(`${API_BASE_URL}/settings`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prices: updatedPrices })
-            });
-        } catch (error) {
-            console.error("Update settings error:", error);
-        }
+        currentSettings.prices = updatedPrices;
+        this.DB.setSettings(currentSettings);
         return { prices: updatedPrices };
     },
 
     async getPriceForType(fishType) {
         const settings = await this.getSettings();
-        return settings.prices[fishType] || 150;
+        return settings.prices[fishType] || 150; // Default fallback
     },
 
     async recordCatch(fishType, weight) {
@@ -144,88 +140,69 @@ const App = {
         const weightValue = parseFloat(weight);
         const grossValue = weightValue * price;
 
-        try {
-            const response = await fetch(`${API_BASE_URL}/catches`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    fisherman: this.currentUser.username,
-                    fish_type: fishType,
-                    weight: weightValue,
-                    price_per_kg: price,
-                    total_value: grossValue,
-                    status: 'RECORDED'
-                })
-            });
-            return await response.json();
-        } catch (error) {
-            console.error(error);
-        }
+        const catches = this.DB.get('catches');
+        const newCatch = {
+            id: Date.now().toString(),
+            fisherman: this.currentUser.username,
+            fishType: fishType,
+            weight: weightValue,
+            pricePerKg: price,
+            totalValue: grossValue,
+            status: 'RECORDED',
+            recordedAt: new Date().toISOString()
+        };
+
+        catches.push(newCatch);
+        this.DB.set('catches', catches);
+
+        return { success: true, id: newCatch.id };
     },
 
     async getFishermanReports() {
         if (!this.currentUser) return [];
-        try {
-            const response = await fetch(`${API_BASE_URL}/catches?fisherman=${this.currentUser.username}`);
-            const data = await response.json();
-            return data.map(r => ({
-                id: r.id, fisherman: r.fisherman, fishType: r.fish_type, 
-                weight: r.weight, pricePerKg: r.price_per_kg, totalValue: r.total_value, 
-                recordedAt: r.recorded_at, status: r.status 
-            }));
-        } catch (error) {
-            return [];
-        }
+        const catches = this.DB.get('catches');
+        return catches.filter(c => c.fisherman === this.currentUser.username);
     },
 
     async getFishermen() {
-        try {
-            const response = await fetch(`${API_BASE_URL}/users`);
-            const data = await response.json();
-            return data.filter(u => u.role === 'FISHERMAN');
-        } catch (error) {
-            return [];
-        }
+        const users = this.DB.get('users');
+        return users.filter(u => u.role === 'FISHERMAN');
     },
 
     async getAllSalesData(filterFisherman = null, filterDate = null) {
-        let url = `${API_BASE_URL}/catches?`;
-        if (filterFisherman) url += `fisherman=${filterFisherman}&`;
-        if (filterDate) url += `date=${filterDate}&`;
-        
-        try {
-            const response = await fetch(url);
-            const data = await response.json();
-            return data.map(r => ({
-                id: r.id, fisherman: r.fisherman, fishType: r.fish_type, 
-                weight: r.weight, pricePerKg: r.price_per_kg, totalValue: r.total_value, 
-                recordedAt: r.recorded_at, status: r.status 
-            }));
-        } catch (error) {
-            return [];
+        let catches = this.DB.get('catches');
+
+        if (filterFisherman) {
+            catches = catches.filter(c => c.fisherman === filterFisherman);
         }
+        
+        if (filterDate) {
+            catches = catches.filter(c => {
+                const catchDate = new Date(c.recordedAt).toISOString().split('T')[0];
+                return catchDate === filterDate;
+            });
+        }
+
+        return catches;
     },
 
     async updateCatch(id, updatedData) {
-        try {
-            const response = await fetch(`${API_BASE_URL}/catches/${id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(updatedData)
-            });
-            return response.ok;
-        } catch (error) {
-            return false;
+        let catches = this.DB.get('catches');
+        const index = catches.findIndex(c => c.id === id.toString());
+        
+        if (index !== -1) {
+            catches[index] = { ...catches[index], ...updatedData };
+            this.DB.set('catches', catches);
+            return true;
         }
+        return false;
     },
 
     async deleteCatch(id) {
-        try {
-            const response = await fetch(`${API_BASE_URL}/catches/${id}`, { method: 'DELETE' });
-            return response.ok;
-        } catch (error) {
-            return false;
-        }
+        let catches = this.DB.get('catches');
+        catches = catches.filter(c => c.id !== id.toString());
+        this.DB.set('catches', catches);
+        return true;
     },
 
     async manualRecordEntry(fishermanName, fishType, weight, price) {
@@ -233,23 +210,20 @@ const App = {
         const priceValue = parseFloat(price || await this.getPriceForType(fishType));
         const grossValue = weightValue * priceValue;
 
-        try {
-            const response = await fetch(`${API_BASE_URL}/catches`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    fisherman: fishermanName,
-                    fish_type: fishType,
-                    weight: weightValue,
-                    price_per_kg: priceValue,
-                    total_value: grossValue,
-                    status: 'SOLD'
-                })
-            });
-            if (response.ok) return { success: true };
-        } catch (error) {
-            return { success: false, message: 'Server error' };
-        }
+        const catches = this.DB.get('catches');
+        catches.push({
+            id: Date.now().toString(),
+            fisherman: fishermanName,
+            fishType: fishType,
+            weight: weightValue,
+            pricePerKg: priceValue,
+            totalValue: grossValue,
+            status: 'SOLD',
+            recordedAt: new Date().toISOString()
+        });
+
+        this.DB.set('catches', catches);
+        return { success: true };
     },
 
     async getSummaryStats(filterFisherman = null, filterDate = null) {
@@ -257,18 +231,25 @@ const App = {
         const totalWeight = catches.reduce((sum, c) => sum + parseFloat(c.weight || 0), 0);
         const totalGross = catches.reduce((sum, c) => sum + parseFloat(c.totalValue || 0), 0);
 
-        const marketFee = totalGross * 0.20;
+        const marketFee = totalGross * 0.20; // 20% flat market fee from gross
         const sharedData = await this.getSharedExpenseData(filterFisherman, filterDate);
 
+        // Deduct expenses. If viewing everyone, deduct all expenses. If viewing one fisherman, deduct their share
         const sharedDeduction = filterFisherman
             ? parseFloat(sharedData.fishermanShare || 0)
             : parseFloat(sharedData.totalMarketExpenses || 0);
 
+        // Net sales after removing market fee
         const netSales = totalGross - marketFee;
+        
+        // Split remaining 3 ways BEFORE subtracting bale
         const adminShareTersia = netSales * (2 / 3);
         const fishermanShareGross = netSales / 3;
+        
+        // Fisherman takes their 1/3, but pays their specific bale/expenses
         const fishermanShareTersia = fishermanShareGross - sharedDeduction;
 
+        // Display revenue: if global view, total revenue = Admin + all fishermen's net
         const totalRevenue = filterFisherman
             ? fishermanShareTersia
             : (netSales - sharedDeduction);
@@ -278,30 +259,29 @@ const App = {
             totalGross: totalGross.toLocaleString(),
             marketFee: marketFee.toLocaleString(),
             sharedDeduction: sharedDeduction.toLocaleString(),
-            netBeforeTersia: netSales.toLocaleString(),
+            netBeforeTersia: netSales.toLocaleString(), // Shows amount before 3-way split
             adminShareTersia: adminShareTersia.toLocaleString(),
             fishermanShareTersia: fishermanShareTersia.toLocaleString(),
-            totalRevenue: totalRevenue.toLocaleString(),
+            totalRevenue: totalRevenue.toLocaleString(), // Net Income after all deductions
             count: catches.length
         };
     },
 
     async getOperationalExpenses(filterUser = null, filterDate = null) {
-        let url = `${API_BASE_URL}/expenses?`;
-        if (filterUser) url += `recorded_by=${filterUser}&`;
-        if (filterDate) url += `date=${filterDate}&`;
-        
-        try {
-            const response = await fetch(url);
-            const data = await response.json();
-            return data.map(e => ({
-                id: e.id, description: e.description, amount: e.amount, 
-                category: e.category, recordedBy: e.recorded_by, 
-                role: e.role, recordedAt: e.recorded_at
-            }));
-        } catch (error) {
-            return [];
+        let expenses = this.DB.get('expenses');
+
+        if (filterUser) {
+            expenses = expenses.filter(e => e.recordedBy === filterUser);
         }
+        
+        if (filterDate) {
+            expenses = expenses.filter(e => {
+                const exDate = new Date(e.recordedAt).toISOString().split('T')[0];
+                return exDate === filterDate;
+            });
+        }
+        
+        return expenses;
     },
 
     async getSharedExpenseData(filterFisherman = null, filterDate = null) {
@@ -315,10 +295,11 @@ const App = {
         const activeCount = activeFishermen.length;
 
         let fishermanShare = 0;
+        
         if (filterFisherman) {
-            fishermanShare = marketExpenses
-                .filter(e => e.description === filterFisherman)
-                .reduce((sum, e) => sum + parseFloat(e.amount), 0);
+            // For a specific fisherman, "Market Operation" expenses with their name are bales (cash advances)
+            const fishermanExpenses = marketExpenses.filter(e => e.description === filterFisherman);
+            fishermanShare = fishermanExpenses.reduce((sum, e) => sum + parseFloat(e.amount), 0);
         }
 
         return {
@@ -333,35 +314,36 @@ const App = {
     async addOperationalExpense(description, amount, category = 'General') {
         if (!this.currentUser) return { success: false, message: 'Not logged in' };
 
-        try {
-            const response = await fetch(`${API_BASE_URL}/expenses`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    description,
-                    amount: parseFloat(amount),
-                    category,
-                    recorded_by: this.currentUser.username,
-                    role: this.currentUser.role
-                })
-            });
-            if (response.ok) return { success: true };
-        } catch (error) {
-            return { success: false };
-        }
+        const expenses = this.DB.get('expenses');
+        const newExpense = {
+            id: Date.now().toString(),
+            description,
+            amount: parseFloat(amount),
+            category,
+            recordedBy: this.currentUser.username,
+            role: this.currentUser.role,
+            recordedAt: new Date().toISOString()
+        };
+
+        expenses.push(newExpense);
+        this.DB.set('expenses', expenses);
+
+        return { success: true };
     },
 
     async deleteOperationalExpense(id) {
-        try {
-            const response = await fetch(`${API_BASE_URL}/expenses/${id}`, { method: 'DELETE' });
-            return response.ok;
-        } catch (error) {
-            return false;
-        }
+        let expenses = this.DB.get('expenses');
+        expenses = expenses.filter(e => e.id !== id.toString());
+        this.DB.set('expenses', expenses);
+        return true;
     },
 
     resetSystem() {
-        alert("System reset is disabled in MySQL mode.");
+        if(confirm("Are you sure you want to delete ALL data? This cannot be undone.")) {
+            localStorage.clear();
+            alert("System reset complete!");
+            window.location.href = 'index.html';
+        }
     }
 };
 
