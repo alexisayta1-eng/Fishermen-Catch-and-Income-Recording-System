@@ -14,13 +14,13 @@ app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname)));
 
 // Database Connection
-// Update these credentials if your MySQL setup is different
 const db = mysql.createConnection({
     host: process.env.DB_HOST || 'localhost',
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || '', // Default XAMPP/WAMP password is empty
     database: process.env.DB_NAME || 'fcirs_db',
-    port: process.env.DB_PORT || 3306
+    port: process.env.DB_PORT || 3306,
+    ssl: process.env.DB_HOST ? { rejectUnauthorized: false } : undefined // Required for Aiven/Cloud DBs
 });
 
 db.connect((err) => {
@@ -29,6 +29,24 @@ db.connect((err) => {
         return;
     }
     console.log('Connected to MySQL database!');
+    
+    // Automatically initialize tables if they don't exist
+    const createUsers = `CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, username VARCHAR(255) NOT NULL UNIQUE, password VARCHAR(255) NOT NULL, role ENUM('ADMIN', 'FISHERMAN', 'OPERATOR') DEFAULT 'FISHERMAN', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`;
+    const createCatches = `CREATE TABLE IF NOT EXISTS catches (id INT AUTO_INCREMENT PRIMARY KEY, fisherman VARCHAR(255) NOT NULL, fish_type VARCHAR(255) NOT NULL, weight DECIMAL(10,2) NOT NULL, price_per_kg DECIMAL(10,2) NOT NULL, total_value DECIMAL(10,2) NOT NULL, status VARCHAR(50) DEFAULT 'RECORDED', recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`;
+    const createExpenses = `CREATE TABLE IF NOT EXISTS operational_expenses (id INT AUTO_INCREMENT PRIMARY KEY, description VARCHAR(255) NOT NULL, amount DECIMAL(10,2) NOT NULL, category VARCHAR(100) DEFAULT 'General', recorded_by VARCHAR(255) NOT NULL, role VARCHAR(50) NOT NULL, recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`;
+    const createSettings = `CREATE TABLE IF NOT EXISTS settings (id INT AUTO_INCREMENT PRIMARY KEY, prices JSON NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)`;
+    
+    db.query(createUsers, () => {
+        db.query(`INSERT IGNORE INTO users (username, password, role) VALUES ('Admin', '1234', 'ADMIN')`);
+    });
+    db.query(createCatches);
+    db.query(createExpenses);
+    db.query(createSettings, () => {
+        const defaultPrices = { "Tuna": 150, "lumayagan": 150, "Big Karaw": 150, "Perit": 150, "Tulingan": 150, "MC": 150 };
+        db.query(`INSERT IGNORE INTO settings (id, prices) VALUES (1, ?)`, [JSON.stringify(defaultPrices)]);
+    });
+
+    console.log('Database tables ready.');
 });
 
 // --- API Endpoints ---
